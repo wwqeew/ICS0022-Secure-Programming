@@ -133,7 +133,9 @@ When encrypting the vault:
 3. ciphertext and authentication data are stored in the vault file
 4. nonce is stored as non-secret metadata
 
-When decrypting the vault, stored nonce and derived encryption key are used to decrypt and authenticate the data.
+When decrypting the vault, stored nonce and derived encryption key are used to decrypt and authenticate the data
+
+Cryptographic metadata such as the vault version and KDF parameters is authenticated using AES-GCM additional authenticated data (AAD).
 
 A new nonce must be generated whenever the vault is encrypted. Nonces must not be reused with the same encryption key.
 
