@@ -8,7 +8,7 @@ See full project scope in [README](README.md#scope)
 
 ## 2. Architecture
 
-User <-> CLI <-> User Management <-> Encryption <-> Storage <-> Encrypted Vault
+User <-> CLI <-> User Management/Session<-> Encryption <-> Storage <-> Encrypted Vault
 
 Data flows from user through the CLI and user-management module to the encryption module. Encrypted data is then passed to the storage layer and stored in the local vault. When reading data, flow occurs in the opposite direction.
 
@@ -35,6 +35,9 @@ Controls access to password vault and manages current application session.
 - creates initial vault
 - receives master password from interface
 - unlocks the vault
+- manages the unlocked session
+- keeps decrypted vault and derived encryption key in memory during active session
+- locks vault and removes sensitive session data when the user locks or exits the application
 - changes master password
 - denies access when authentication fails
 
@@ -63,13 +66,17 @@ All interaction with local filesystem.
 
 ### 2.2 Data flow
 
-When storing or updating credentials, data flows from the user through the CLI and user-management module to the encryption module. 
-Encryption module encrypts vault data and passes encrypted data to the storage layer, which writes it to the local vault.
+When the application starts, user enters master password through CLI. User-management module passes it to the encryption module, which derives encryption key and decrypts the vault.
 
-When reading credentials, storage layer reads encrypted vault and passes it to the encryption module. 
-Encryption module decrypts the data and returns it through the user-management module and CLI to the user.
+Decrypted vault and derived key remain in memory for the duration of the unlocked session. 
 
-Master password is provided through the CLI to the user-management module and is used by encryption module to derive encryption key. Master password and derived key are not stored permanently.
+During an unlocked session, read operations such as `get` and `list` use decrypted vault stored in memory.
+
+After any operation that modifies the vault, such as `add`, `update` or `delete`, the updated vault is immediately encrypted and safely written to storage. Session remains unlocked, so the master password does not need to be entered again.
+
+Vault updates are written using a temporary file and atomic replacement to reduce the risk of corruption if the application terminates unexpectedly.
+
+When the user locks the vault or exits the application, sensitive session data is no longer retained by the application.
 
 ## 3. Vault and сryptographic design
 
