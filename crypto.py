@@ -41,13 +41,13 @@ def derive_key(password: str, salt: bytes) -> bytes:
 
 
 def encrypt(
-    plaintext: bytes, key: bytes, aad: bytes
-) -> tuple[bytes, bytes]:
-    """encrypt data with AES-256-GCM.
+    plaintext: bytes,
+    key: bytes,
+    aad: bytes,
+    nonce: bytes,
+) -> bytes:
+    """Encrypt data using AES-256-GCM."""
 
-    returns tuple containing nonce and ct.
-    ct includes the authentication tag.
-    """
     if not isinstance(plaintext, bytes):
         raise TypeError("Plaintext must be bytes")
 
@@ -57,10 +57,10 @@ def encrypt(
     if not isinstance(aad, bytes):
         raise TypeError("AAD must be bytes")
 
-    nonce = secrets.token_bytes(NONCE_SIZE)
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
+    if not isinstance(nonce, bytes) or len(nonce) != NONCE_SIZE:
+        raise ValueError("Invalid nonce")
 
-    return nonce, ciphertext
+    return AESGCM(key).encrypt(nonce, plaintext, aad)
 
 
 def decrypt(
