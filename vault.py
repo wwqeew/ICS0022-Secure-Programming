@@ -1,7 +1,6 @@
 
 import base64
 import json
-import os
 import secrets
 from pathlib import Path
 
@@ -16,7 +15,12 @@ from crypto import (
     encrypt,
     decrypt,
 )
-from storage import read_vault, MAX_VAULT_SIZE
+from storage import (
+    read_vault,
+    write_vault,
+    create_vault_file,
+    MAX_VAULT_SIZE,
+)
 
 
 VAULT_VERSION = 1
@@ -142,24 +146,7 @@ def create_vault(path: Path, password: str) -> None:
     if len(data) > MAX_VAULT_SIZE:
         raise ValueError("Vault data is too large")
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL  # exclusive creation
-    if hasattr(os, "O_BINARY"):
-        flags = flags | os.O_BINARY  # binary mode (windows)
-
-    fd = os.open(path, flags, 0o600)
-
-    try:
-        with os.fdopen(fd, "wb", closefd=False) as file:
-            file.write(data)  # write encrypted vault
-            file.flush()  # flush python buffer
-            os.fsync(file.fileno())  # sync file to disk
-    except BaseException:
-        path.unlink(missing_ok=True)  # remove incomplete vault
-        raise
-    finally:
-        os.close(fd)  # close file descriptor
+    create_vault_file(path, data)  # safely create encrypted vault
 
 
 def unlock_vault(path: Path, password: str) -> dict:
@@ -188,3 +175,180 @@ def unlock_vault(path: Path, password: str) -> dict:
 
     except (ValueError, UnicodeError) as exc:
         raise ValueError("Invalid vault contents") from exc
+
+
+class VaultSession:
+    """Manage unlocked password vault"""
+
+    def __init__(self, path: Path, password: str):
+        self.path = Path(path)
+
+        data = read_vault(self.path)  # read encrypted vault
+        self.metadata, ciphertext = parse_vault(data)
+
+        salt = decode_bytes(self.metadata["salt"])
+        nonce = decode_bytes(self.metadata["nonce"])
+
+        self.key = derive_key(password, salt)  # derive encryption key
+        aad = get_aad(self.metadata)
+
+        plaintext = decrypt(ciphertext, self.key, nonce, aad)
+        vault = json.loads(plaintext)  # decode vault contents
+
+        if not isinstance(vault, dict):
+            raise ValueError("Invalid vault contents")
+
+        if set(vault) != {"entries"}:
+            raise ValueError("Invalid vault contents")
+
+        if not isinstance(vault["entries"], dict):
+            raise ValueError("Invalid vault entries")
+
+        for name, entry in vault["entries"].items():
+            self.validate_entry(name, entry)
+
+        self.entries = vault["entries"]
+
+    @staticmethod
+    def validate_name(name: str) -> None:
+        """validate entry name"""
+        if not isinstance(name, str):
+            raise ValueError("Invalid entry name")
+
+        if not 1 <= len(name) <= 64:
+            raise ValueError("Entry name must contain 1-64 characters")
+
+        allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+
+        if any(char not in allowed for char in name):
+            raise ValueError("Invalid entry name")
+
+    @staticmethod
+    def validate_entry(name: str, entry: dict) -> None:
+        """Validate credential entry."""
+        VaultSession.validate_name(name)
+
+        if not isinstance(entry, dict):
+            raise ValueError("Invalid credential entry")
+
+        if set(entry) != {"username", "password"}:
+            raise ValueError("Invalid credential fields")
+
+        if not isinstance(entry["username"], str):
+            raise ValueError("Invalid username")
+
+        if not isinstance(entry["password"], str):
+            raise ValueError("Invalid password")
+
+        if not 1 <= len(entry["username"]) <= 256:
+            raise ValueError("Invalid username length")
+
+        if not 1 <= len(entry["password"]) <= 4096:
+            raise ValueError("Invalid password length")
+
+    def save(self, entries: dict) -> None:
+        """Encrypt and save updated vault"""
+        if self.key is None:
+            raise ValueError("Vault is locked")
+
+        plaintext = json.dumps(
+            {"entries": entries}
+        ).encode("utf-8")
+
+        nonce = secrets.token_bytes(NONCE_SIZE)  # fresh nonce
+        salt = decode_bytes(self.metadata["salt"])
+
+        metadata = get_metadata(salt, nonce)
+        aad = get_aad(metadata)
+
+        ciphertext = encrypt(
+            plaintext, self.key, aad, nonce
+        )
+
+        data = serialize_vault(metadata, ciphertext)
+        write_vault(self.path, data)  # atomic replacement
+
+        self.metadata = metadata
+        self.entries = entries
+
+    def add(self, name: str, username: str, password: str) -> None:
+        """Add a new credential."""
+        entry = {"username": username, "password": password}
+        self.validate_entry(name, entry)
+
+        if name in self.entries:
+            raise ValueError("Entry already exists")
+
+        updated = self.entries.copy()
+        updated[name] = entry
+
+        self.save(updated)  # persist changes
+
+    def list_entries(self) -> list[str]:
+        """List credential names"""
+        return sorted(self.entries)
+
+    def get(self, name: str) -> dict:
+        """Retrieve credential"""
+        if name not in self.entries:
+            raise ValueError("Entry not found")
+
+        return self.entries[name].copy()
+
+    def update(
+        self, name: str, username: str, password: str
+    ) -> None:
+        """Update existing credential"""
+        if name not in self.entries:
+            raise ValueError("Entry not found")
+
+        entry = {"username": username, "password": password}
+        self.validate_entry(name, entry)
+
+        updated = self.entries.copy()
+        updated[name] = entry
+
+        self.save(updated)  # persist changes
+
+    def delete(self, name: str) -> None:
+        """Delete existing credential"""
+        if name not in self.entries:
+            raise ValueError("Entry not found")
+
+        updated = self.entries.copy()
+        del updated[name]
+
+        self.save(updated)  # persist changes
+
+    def change_password(self, password: str) -> None:
+        """Re-encrypt vault with new master password"""
+        if not isinstance(password, str) or not password:
+            raise ValueError("Master password must not be empty")
+
+        salt = generate_salt()  # fresh salt
+        new_key = derive_key(password, salt)
+        nonce = secrets.token_bytes(NONCE_SIZE)
+
+        metadata = get_metadata(salt, nonce)
+        aad = get_aad(metadata)
+
+        plaintext = json.dumps(
+            {"entries": self.entries}
+        ).encode("utf-8")
+
+        ciphertext = encrypt(
+            plaintext, new_key, aad, nonce
+        )
+
+        data = serialize_vault(metadata, ciphertext)
+        write_vault(self.path, data)  # save re-encrypted vault
+
+        self.key = new_key
+        self.metadata = metadata
+
+    def lock(self) -> None:
+        """Release unlocked session data."""
+        self.entries.clear()
+        self.key = None
+        self.metadata = None
+
