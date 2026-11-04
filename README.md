@@ -277,6 +277,6 @@ ICS0022-Secure-Programming/
 ```
 
 
-## 11. Design Documentation
+## 10. Design Documentation
 
 For more information about the architecture, cryptographic design, data flow and threat model, see [design.md](design.md).
