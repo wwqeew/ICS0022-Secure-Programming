@@ -6,8 +6,6 @@ A local, single-user command-line password manager written in Python. All entrie
 
 ## Architecture
 
-## Architecture
-
 ```mermaid
 flowchart TD
     A["User"] --> B["CLI (pm.py)"]
