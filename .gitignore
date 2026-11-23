@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+venv/
+.env
+*.log
+*.jsonl
+vault.json
+vault-*.json
