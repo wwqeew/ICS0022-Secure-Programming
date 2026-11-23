@@ -2,7 +2,7 @@
 
 **Project:** Local Command-Line Password Manager  
 **Author:** Ilja Priimak  
-**Checkpoint:** 3 
+**Checkpoint:** 3  
 **Date:** 23 November 2026
 
 ## 1. Introduction
