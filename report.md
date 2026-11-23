@@ -1,10 +1,5 @@
 # ICS0022 Secure Programming - Checkpoint 3 Report
 
-**Project:** Local Command-Line Password Manager  
-**Author:** Ilja Priimak  
-**Checkpoint:** 3  
-**Date:** 23 November 2026
-
 ## 1. Introduction
 
 The goal of this project is to implement local command-line password manager that securely stores credentials in an encrypted vault. Application is designed for a single user on a local computer. User creates vault with a master password, unlocks it, and manages credential records using an interactive command-line interface. Each record has a name, username and password. Application does not implement cloud synchronisation, browser integration, multi-user accounts or network API.
