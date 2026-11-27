@@ -36,7 +36,8 @@ Existing vaults require master password to unlock. Running Windows and WSL norma
 
 Entry names: 1–64 characters, only ASCII letters, digits, `.`, `_`, `-`. 
 Usernames: 1-256 characters. Entry passwords: 1-4096 characters. 
-Master passwords: 1-4096 characters. Control characters are rejected.
+Master passwords: 15-4096 characters. Control characters are rejected.
+Password input is hidden. If terminal echo cannot be disabled, application refuses to read the password.
 Any password may include spaces and ordinary punctuation. User input is never executed as a shell command.
 
 ## Cryptography and storage
@@ -45,11 +46,26 @@ Any password may include spaces and ordinary punctuation. User input is never ex
 - **AES-256-GCM:** authenticated encryption, 12-byte fresh random nonce for each save, with vault metadata as authenticated additional data (AAD).
 - **Vault file:** `~/.ics0022-password-manager/vault.json` (up to 10 MiB); plaintext entry names/usernames/passwords exist only inside encrypted payload on disk.
 - **POSIX permissions:** directory `0700`, vault `0600`; read and write operations verify ownership and permissions. Non-regular vaults and final-component symlinks are rejected.
-- **Persistence:** temporary file, `fsync`, atomic replace, directory sync on POSIX; file creation uses exclusive publication. Session refuses to overwrite a vault that it detects has changed since last read.
-
+- **Persistence:** temporary file, `fsync`, atomic replace and directory sync on POSIX. File creation uses exclusive publication.
+- **Concurrent access:** cross-process file locking using `fcntl` on POSIX and `msvcrt` on Windows. Ыession checks vault revision while holding the lock to prevent stale writes.
+- **File validation:** non-regular files, insecure permissions and final-component symlinks are rejected where supported. Non-blocking file opening prevents hanging on special files such as FIFOs on POSIX.
 ## Logging and error handling
 
 Security events are written as newline-delimited JSON in the restricted file `~/.ics0022-password-manager/events.jsonl`. Each line has only `timestamp`, a fixed `event` identifier, and `outcome`. **No entry names, usernames, passwords, keys, ciphertext or filesystem paths are logged.** CLI prints generic error messages, while test code can still inspect Python exceptions. Logging is best-effort; errors in log writing do not block password manager.
+
+## Clipboard security
+
+Passwords retrieved using `get` command are copied to the clipboard instead of being displayed in the terminal.
+
+Application attempts to clear copied passwords:
+
+- Automatically after 30 seconds.
+- When the vault is locked.
+- When the application exits normally or through Ctrl+C.
+
+Before clearing clipboard, application compares its current content with the SHA-256 digest of the copied password. Unrelated clipboard content is preserved where possible.
+
+Clipboard history and external clipboard managers are outside application's control.
 
 ## Access control and memory
 
@@ -67,8 +83,29 @@ python -m pytest -q
 
 Tests use temporary vaults and fake credentials. They cover encrypt/decrypt, authentication failures, metadata tampering, CRUD, password rotation, validation boundaries, locked-session denial, session-key zeroization, filesystem protection (POSIX), stale writes and secret-free logging.
 
+### Security testing results
+
+Testing performed on 27 November 2026.
+
+| Environment / Tool | Result |
+|---|---|
+| Windows, Python 3.13 | 77 passed, 2 skipped |
+| Linux/WSL, Python 3.12 | 79 passed, 0 skipped |
+| Bandit static analysis | No issues identified |
+| pip-audit dependency analysis (Windows) | No known vulnerabilities found |
+
+Two platform-specific tests were skipped on Windows and passed on Linux.
+
 ## Limitations
 
-Windows ACLs are not validated by the POSIX permission checks; Windows deployments need a separate ACL review. Malicious software running as the same user can read clipboard data and inspect the process. Clipboard contents are not automatically cleared. Python memory erasure is best-effort only. Power-loss behavior depends on the filesystem. Master-password strength is not scored.
+- Python cannot guarantee complete zeroization of immutable strings and byte objects.
+- Windows ACLs are not validated by POSIX permission checks.
+- Malware running with the same user's privileges may access process memory, keystrokes or clipboard contents.
+- Automatic clipboard cleanup cannot remove passwords from clipboard history or external clipboard managers.
+- Clipboard content may change between verification and cleanup.
+- File locking protects cooperating application instances, not external programs that ignore the lock.
+- Audit logging is best-effort.
+- Master-password length is enforced for new passwords, but password entropy is not measured.
+- Power-loss behavior depends on the underlying filesystem.
 
 See [design.md](design.md) for the initial architecture and threat model, and [report.md](report.md) for the Checkpoint 3 report.
