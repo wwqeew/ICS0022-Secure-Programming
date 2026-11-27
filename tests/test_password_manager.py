@@ -285,3 +285,141 @@ def test_scripted_cli_end_to_end(tmp_path, monkeypatch, capsys):
         assert session.list_entries() == []
     finally:
         session.lock()
+
+
+@pytest.mark.parametrize("password", ["a", "12345678", "a" * 14])
+def test_reject_short_master_password(path, password):
+    with pytest.raises(ValueError):
+        create_vault(path, password)
+
+    assert not path.exists()
+
+
+def test_minimum_master_password_length(path):
+    password = "a" * 15
+    create_vault(path, password)
+
+    session = VaultSession(path, password)
+    try:
+        assert session.list_entries() == []
+    finally:
+        session.lock()
+
+
+def test_reject_short_password_rotation(unlocked, path):
+    with pytest.raises(ValueError):
+        unlocked.change_password("short")
+
+    session = VaultSession(path, MASTER)
+    try:
+        assert session.list_entries() == unlocked.list_entries()
+    finally:
+        session.lock()
+
+@pytest.fixture
+def fake_clipboard(monkeypatch):
+    clipboard = [""]
+
+    monkeypatch.setattr(
+        pm.pyperclip,
+        "copy",
+        lambda value: clipboard.__setitem__(0, value),
+    )
+
+    monkeypatch.setattr(
+        pm.pyperclip,
+        "paste",
+        lambda: clipboard[0],
+    )
+
+    yield clipboard
+
+    pm.clear_copied_password()
+
+
+def test_clipboard_password_is_cleared(fake_clipboard):
+    pm.copy_password(SECRET)
+
+    assert fake_clipboard[0] == SECRET
+
+    pm.clear_copied_password()
+
+    assert fake_clipboard[0] == ""
+
+
+def test_clipboard_preserves_other_text(fake_clipboard):
+    pm.copy_password(SECRET)
+
+    fake_clipboard[0] = "unrelated text"
+
+    pm.clear_copied_password()
+
+    assert fake_clipboard[0] == "unrelated text"
+
+
+def test_old_clipboard_timer_cannot_clear_new_password(
+    fake_clipboard,
+):
+    pm.copy_password(SECRET)
+    old_token = pm._clipboard_token
+
+    pm.copy_password("another-fake-secret")
+
+    pm.clear_copied_password(old_token)
+
+    assert fake_clipboard[0] == "another-fake-secret"
+
+    pm.clear_copied_password(pm._clipboard_token)
+
+    assert fake_clipboard[0] == ""
+
+def test_concurrent_write_lock(unlocked, path):
+    from storage import vault_write_lock
+
+    with vault_write_lock(path):
+        with pytest.raises(RuntimeError, match="Vault is busy"):
+            unlocked.add("example", "user", SECRET)
+
+    assert unlocked.list_entries() == []
+
+    unlocked.add("example", "user", SECRET)
+
+    assert unlocked.get("example")["password"] == SECRET
+
+
+def test_write_lock_released_on_exception(path):
+    from storage import vault_write_lock
+
+    with pytest.raises(ValueError):
+        with vault_write_lock(path):
+            raise ValueError("Simulated failure")
+
+    with vault_write_lock(path):
+        pass
+
+def test_secure_password_input_rejects_echo(monkeypatch):
+    import warnings
+    import getpass
+
+    def insecure_input(prompt):
+        warnings.warn(
+            "Echo cannot be disabled",
+            getpass.GetPassWarning,
+        )
+        return SECRET
+
+    monkeypatch.setattr(
+        pm.getpass,
+        "getpass",
+        insecure_input,
+    )
+
+    with pytest.raises(ValueError):
+        pm.read_secret("Password: ")
+
+
+def test_deeply_nested_json_rejected():
+    data = b"[" * 2000 + b"]" * 2000
+
+    with pytest.raises(ValueError):
+        parse_vault(data)

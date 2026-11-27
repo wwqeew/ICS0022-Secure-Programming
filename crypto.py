@@ -12,6 +12,7 @@ ARGON2_TIME_COST = 3
 ARGON2_MEMORY_COST = 65536  # KiB
 ARGON2_PARALLELISM = 2
 MAX_MASTER_PASSWORD_LENGTH = 4096
+MIN_MASTER_PASSWORD_LENGTH = 15
 
 
 def validate_master_password(password: str) -> None:
@@ -25,6 +26,13 @@ def validate_master_password(password: str) -> None:
 def generate_salt() -> bytes:
     return secrets.token_bytes(SALT_SIZE)
 
+def validate_new_master_password(password: str) -> None:
+    validate_master_password(password)
+
+    if len(password) < MIN_MASTER_PASSWORD_LENGTH:
+        raise ValueError(
+            "Master password must contain at least 15 characters"
+        )
 
 def derive_key(password: str, salt: bytes) -> bytes:
     validate_master_password(password)

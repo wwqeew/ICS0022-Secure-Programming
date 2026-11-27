@@ -2,6 +2,7 @@
 import os
 import stat
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 MAX_VAULT_SIZE = 10 * 1024 * 1024
@@ -35,7 +36,12 @@ def read_vault(path: Path) -> bytes:
     check_vault_directory(path.parent)
     if path.is_symlink():  # Windows fallback when O_NOFOLLOW is unavailable.
         raise PermissionError("Invalid vault file")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+    )
     fd = os.open(path, flags)
     try:
         _check_fd(fd)
@@ -109,3 +115,61 @@ def write_vault(path: Path, data: bytes) -> None:
 
 def create_vault_file(path: Path, data: bytes) -> None:
     _publish(path, data, replace=False)
+
+@contextmanager
+def vault_write_lock(path: Path):
+    path = Path(path)
+    _prepare_parent(path)
+
+    lock_path = path.with_name(path.name + ".lock")
+
+    if lock_path.is_symlink():
+        raise PermissionError("Invalid lock file")
+
+    flags = (
+        os.O_CREAT
+        | os.O_RDWR
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+
+    fd = os.open(lock_path, flags, 0o600)
+
+    try:
+        _check_fd(fd)
+
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise RuntimeError("Vault is busy") from exc
+
+            try:
+                yield
+            finally:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(
+                    fd,
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
+            except OSError as exc:
+                raise RuntimeError("Vault is busy") from exc
+
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+
+    finally:
+        os.close(fd)

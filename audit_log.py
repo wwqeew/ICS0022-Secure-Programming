@@ -24,7 +24,13 @@ def log_event(directory: Path, event: str, outcome: str = "success") -> None:
         path = directory / "events.jsonl"
         if path.is_symlink():
             return
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        flags = (
+                os.O_WRONLY
+                | os.O_APPEND
+                | os.O_CREAT
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+        )
         fd = os.open(path, flags, 0o600)
         try:
             info = os.fstat(fd)

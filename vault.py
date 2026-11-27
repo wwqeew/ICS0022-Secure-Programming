@@ -10,9 +10,15 @@ from audit_log import log_event
 from crypto import (
     SALT_SIZE, NONCE_SIZE, ARGON2_TIME_COST, ARGON2_MEMORY_COST,
     ARGON2_PARALLELISM, generate_salt, derive_key, encrypt, decrypt,
-    validate_master_password,
+    validate_new_master_password,
 )
-from storage import read_vault, write_vault, create_vault_file, MAX_VAULT_SIZE
+from storage import (
+    read_vault,
+    write_vault,
+    create_vault_file,
+    MAX_VAULT_SIZE,
+    vault_write_lock,
+)
 
 VAULT_VERSION = 1
 _ALLOWED_NAME_CHARS = frozenset(
@@ -90,7 +96,14 @@ def parse_vault(data: bytes) -> tuple[dict, bytes]:
         if len(salt) != SALT_SIZE or len(nonce) != NONCE_SIZE or len(ciphertext) < 16:
             raise ValueError("Invalid cryptographic metadata")
         return metadata, ciphertext
-    except (ValueError, TypeError, UnicodeError, OverflowError, binascii.Error) as exc:
+    except (
+        ValueError,
+        TypeError,
+        UnicodeError,
+        OverflowError,
+        binascii.Error,
+        RecursionError,
+    ) as exc:
         raise ValueError("Invalid vault format or metadata") from exc
 
 
@@ -105,7 +118,13 @@ def _parse_plaintext(plaintext: bytes) -> dict:
         for name, entry in entries.items():
             VaultSession.validate_entry(name, entry)
         return entries
-    except (ValueError, UnicodeError, TypeError, OverflowError) as exc:
+    except (
+        ValueError,
+        UnicodeError,
+        TypeError,
+        OverflowError,
+        RecursionError,
+    ) as exc:
         raise ValueError("Invalid vault contents") from exc
 
 
@@ -117,7 +136,7 @@ def _wipe(buf: bytearray | None) -> None:
 
 def create_vault(path: Path, password: str) -> None:
     path = Path(path)
-    validate_master_password(password)
+    validate_new_master_password(password)
     salt = generate_salt()
     key = bytearray(derive_key(password, salt))
     try:
@@ -208,12 +227,19 @@ class VaultSession:
 
     def _save_encrypted(self, metadata: dict, data: bytes) -> None:
         self._require_unlocked()
-        current = read_vault(self.path)
-        if hashlib.sha256(current).digest() != self._revision:
-            raise RuntimeError("Vault changed on disk; relock and unlock")
-        write_vault(self.path, data)
-        self.metadata = metadata
-        self._revision = hashlib.sha256(data).digest()
+
+        with vault_write_lock(self.path):
+            current = read_vault(self.path)
+
+            if hashlib.sha256(current).digest() != self._revision:
+                raise RuntimeError(
+                    "Vault changed on disk; relock and unlock"
+                )
+
+            write_vault(self.path, data)
+
+            self.metadata = metadata
+            self._revision = hashlib.sha256(data).digest()
 
     def save(self, entries: dict) -> None:
         self._require_unlocked()
@@ -270,7 +296,7 @@ class VaultSession:
 
     def change_password(self, password: str) -> None:
         self._require_unlocked()
-        validate_master_password(password)
+        validate_new_master_password(password)
         salt = generate_salt()
         new_key = bytearray(derive_key(password, salt))
         try:
